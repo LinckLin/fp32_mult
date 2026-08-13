@@ -1,0 +1,16 @@
+# Verilator build artifacts
+obj_dir/
+*.vcd
+*.fst
+
+# generated golden vectors (regenerate with: python3 tb/gen_golden.py)
+tb/golden.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+ref_project/
