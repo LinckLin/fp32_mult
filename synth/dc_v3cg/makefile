@@ -8,7 +8,7 @@ FILE_LIST = ./inputs/file.list
 SCAN = 0
 FP_FILE = ./inputs/icc2dct.fp
 RETIME ?= 0
-CG ?= 0
+CG ?= 1
 
 DC_SHELL ?= $(shell command -v dc_shell-xg-t 2>/dev/null || command -v dc_shell 2>/dev/null || { test -x /home/public/app/synopsys/compat/bin/dc_shell && echo /home/public/app/synopsys/compat/bin/dc_shell; })
 

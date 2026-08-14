@@ -226,6 +226,13 @@ if {[info exists CG] && $CG == 1} {
 compile_ultra -no_autoungroup
 set wns0 [snap_reports 1.00 "p1000"]
 
+# CG experiment: power-focused run, skip the Fmax sweep
+if {[info exists CG] && $CG == 1} {
+    report_power -hier -hier_level 2 -analysis_effort medium > $REPORTS_DIR/power_cg.rpt
+    set svf -off
+    exit
+}
+
 ###############################################################################
 # clock sweep: tighten period round by round, stop when WNS < -0.5 ns
 ###############################################################################

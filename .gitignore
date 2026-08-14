@@ -59,3 +59,16 @@ synth/*/.DC_log_snapshot*/
 # gate_check: tb copies live in the repo root (../tb)
 gate_check/tb/
 synth/*/*.csh
+
+# ---- v3_check (7-stage timing+power variant verification) ----
+v3_check/obj_dir/
+v3_check/tb/golden.txt
+v3_check/*.log
+v3_check/*.vcd
+
+# ---- gate_check SAIF flow (generated data + netlist copies) ----
+gate_check/*.saif
+gate_check/saif_v2/
+gate_check/saif_v3/
+gate_check/stim_simd.hex
+gate_check/exp_simd.hex

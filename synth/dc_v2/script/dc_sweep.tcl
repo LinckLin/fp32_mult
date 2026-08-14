@@ -199,6 +199,9 @@ proc snap_reports {p tag} {
     report_timing -delay max -sort_by slack -path full -nworst 5 -max_paths 30 > $REPORTS_DIR/timing_${tag}.rpt
     report_timing -delay max -path_type end -sort_by slack -max_paths 300 > $REPORTS_DIR/endpoints_${tag}.rpt
     report_area -hier >  $REPORTS_DIR/area_${tag}.rpt
+    if {$tag == "p1000"} {
+        report_power -hier -hier_level 2 -analysis_effort medium > $REPORTS_DIR/power_${tag}.rpt
+    }
     return $wns
 }
 

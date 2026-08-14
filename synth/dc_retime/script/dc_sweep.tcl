@@ -199,9 +199,6 @@ proc snap_reports {p tag} {
     report_timing -delay max -sort_by slack -path full -nworst 5 -max_paths 30 > $REPORTS_DIR/timing_${tag}.rpt
     report_timing -delay max -path_type end -sort_by slack -max_paths 300 > $REPORTS_DIR/endpoints_${tag}.rpt
     report_area -hier >  $REPORTS_DIR/area_${tag}.rpt
-    if {$tag == "p1000"} {
-        report_power -hier -hier_level 2 -analysis_effort medium > $REPORTS_DIR/power_${tag}.rpt
-    }
     return $wns
 }
 
@@ -211,13 +208,6 @@ proc snap_reports {p tag} {
 if {[info exists RETIME] && $RETIME == 1} {
     set_optimize_registers true
     puts "INFO: register retiming ENABLED"
-}
-
-# optional clock gating (power experiment)
-if {[info exists CG] && $CG == 1} {
-    set_clock_gating_style -sequential_cell latch -positive_edge_logic {integrated} -minimum_bitwidth 3
-    set_power_cg_all_registers true
-    puts "INFO: clock gating ENABLED"
 }
 
 ###############################################################################

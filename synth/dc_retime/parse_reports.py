@@ -9,10 +9,7 @@ def stage_of(leaf: str) -> str:
     base = base.replace("_reg", "")
     if base.startswith("r5_"): return "S5_pack"
     if base.startswith("r4_lane"): return "S4_lane"
-    if base.startswith("r4a_"): return "S4a"   # retiming may create r4a-style names (n/a here)
     if base.startswith("r4_"): return "S4_round"
-    if base.startswith("r3a_lane"): return "S3a_lane"
-    if base.startswith("r3a_"): return "S3a_scalar"
     if base.startswith("r3_lane"): return "S3_lane"
     if base.startswith("r3_"): return "S3_norm"
     if base.startswith("r2_tile"): return "S2_mul"
