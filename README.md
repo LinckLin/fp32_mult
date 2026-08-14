@@ -51,9 +51,11 @@ make clean
 
 ```
 rtl/
-  fp32_mult.v        # 主数据通路(标量 + 4-lane SIMD,约 900 行)
-  fp32_rnd_inc.v     # 舍入增量决策(全格式/SIMD 共用,10 个例化)
-  fp32_defs.vh       # 格式 id 与舍入模式常量
+  fp32_mult.v        # V1 基线(5 级)——仓库默认 RTL,make sim / lint 使用
+  fp32_mult_v2.v     # V2(6 级,S3 切分 S3a/S3b)
+  fp32_mult_v3.v     # V3(7 级,时序+功耗优化:S2 流水化+移位链重排+P1/P2 门控)
+  fp32_rnd_inc.v     # 舍入增量决策(全格式/SIMD 共用,三个版本共享)
+  fp32_defs.vh       # 格式 id 与舍入模式常量(三个版本共享)
 tb/
   fp32_mult_tb.cpp   # Verilator 测试平台(通用 C++ 参考模型 + 6 阶段驱动)
   gen_golden.py      # 位运算式 Python 模型,生成黄金向量
@@ -62,14 +64,28 @@ tb/
   audit_vectors.py   # FP32 定向向量表审计工具
 docs/DESIGN.md       # 架构与数学推导
 docs/VERIFICATION.md # 验证方法学
-docs/SYNTH_DC.md     # DC 综合报告(Fmax 上限、S3 切分实验、门级验证)
+docs/SYNTH_DC.md     # DC 综合报告(Fmax 上限、变体对比、门级验证、PT-PX 功耗)
 synth/
-  dc/                # 基线 DC 综合(SMIC28):makefile + 扫描脚本 + SDC + 网表
-  dc_v2/             # S3 切分 6 级变体综合(rtl_v2,Fmax +19%)
-  dc_v3/             # 寄存器重定时实验(无收益,证明 5 级已平衡)
-v2_check/            # 6 级变体全量功能验证(全部 tb 阶段)
-gate_check/          # 门级网表 VCS 全量黄金回放(242 万条 0 mismatch)
+  dc/                # V1 基线 DC 综合(SMIC28):makefile + 扫描脚本 + SDC + 网表
+  dc_v2/             # V2 综合(Fmax +19%)
+  dc_v3/             # V3 综合(Fmax +23%)+ PT-PX 功耗脚本
+  dc_v3cg/           # V3 + 时钟门控实验(CLKLANAQ ICG 插入)
+  dc_retime/         # 寄存器重定时实验(无收益,证明 5 级已平衡)
+v2_check/ v3_check/  # V2/V3 全量功能验证(242 万黄金 + 全部 tb 阶段)
+gate_check/          # 门级网表 VCS 全量黄金回放 + SAIF 采集(三变体 0 mismatch)
 ```
+
+三个版本的模块名都是 `fp32_mult`、接口与语义完全一致(功能等价,验证覆盖相同),
+差异只在流水级数与内部结构:
+
+| 版本 | 文件 | 级数 | Fmax(SMIC28/0.8V/25°C) | 面积@1GHz | 选型建议 |
+|------|------|------|-------------------------|-----------|----------|
+| V1 | `rtl/fp32_mult.v` | 5 | ≈1.11 GHz | 10,078 µm² | 默认:低延迟、最省电(7.96 pJ/运算) |
+| V2 | `rtl/fp32_mult_v2.v` | 6 | ≈1.31 GHz(+19%) | 11,116 µm² | 中间档 |
+| V3 | `rtl/fp32_mult_v3.v` | 7 | ≈1.36 GHz(+23%) | 12,377 µm² | 频率优先(8.99 pJ/运算) |
+
+换版本:把对应文件拷为 `rtl/fp32_mult.v` 即可(make sim 验证;V2/V3 需把 tb 里
+`LATENCY` 常量改为 6/7,v2_check/v3_check 内已配好)。
 
 ## 接口
 

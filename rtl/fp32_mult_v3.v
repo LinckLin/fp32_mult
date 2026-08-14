@@ -1,6 +1,9 @@
 // =============================================================================
-// fp32_mult : 5-stage pipelined multi-format multiplier with SIMD packing
-// VARIANT  : V1 基线版（5 级）——仓库默认 RTL，make sim / lint 使用
+// fp32_mult : 7-stage pipelined multi-format multiplier with SIMD packing
+// VARIANT  : V3（7 级，时序+功耗优化版）
+//   (timing+power variant: S2 split into 6x6 partials + adder tree,
+//    S3a merge+LZ only, S3b combined bidirectional shift, S4a shift+sticky
+//    mask, S5 pack+inc; 2-lane/INT power gating)
 //   FP (IEEE 754 semantics): FP32, FP16, BF16, TF32, BF32, FP8-E5M2,
 //                            FP8-E4M3FN, FP4-E2M1
 //   INT (wrap): INT4/INT8/INT16, signed/unsigned
@@ -105,8 +108,8 @@ module fp32_mult (
   reg [47:0] r4_psh;
   /* verilator lint_on UNUSEDSIGNAL */
   reg [22:0] r4_fpre;
-  reg        r4_sg, r4_sr, r4_ss;
-  reg        r4_inc_n, r4_inc_s;
+  reg        r4_sg, r4_sr;
+  reg [47:0] r4_psh_msk;
   reg [2:0]  r4_rm;
   reg [3:0]  r4_ew;
   reg [4:0]  r4_f, r4_n, r4_lw;
@@ -117,6 +120,52 @@ module fp32_mult (
   reg        r4_lane_no_inf, r4_lane_is_int, r4_lane_signed;
   reg [63:0] r5_result;
   reg [15:0] r5_fflags;
+
+  // ---- 7-stage variant: S2a stage registers ----
+  reg        r2a_valid;
+  reg [11:0] r2a_pp [0:3][0:3];   // 4 tiles x 4 partial products (6x6)
+  reg        r2a_any_nan, r2a_any_inf, r2a_any_zero, r2a_zero_inf, r2a_nv;
+  reg [31:0] r2a_nan_res;
+  reg        r2a_rs;
+  reg signed [9:0] r2a_exp_sum;
+  reg [2:0]  r2a_rm;
+  reg [4:0]  r2a_f, r2a_n, r2a_lw;
+  reg [3:0]  r2a_ew;
+  reg [5:0]  r2a_align_sh;
+  reg        r2a_is_int, r2a_is_signed, r2a_no_inf, r2a_packed;
+  reg [2:0]  r2a_nlanes;
+  reg [4:0]  r2a_lane_f;
+  reg [3:0]  r2a_lane_ew;
+  reg        r2a_lane_no_inf, r2a_lane_is_int, r2a_lane_signed;
+  reg signed [9:0] r2a_lane_exp [0:3];
+  reg [5:0]  r2a_lane_f6   [0:3];
+  reg [10:0] r2a_lane_pl   [0:3];
+
+  // ---- 7-stage variant: S3a stage registers ----
+  reg        r3a_valid;
+  reg [47:0] r3a_prod;
+  reg [5:0]  r3a_lz;
+  reg signed [9:0] r3a_exp;
+  reg [5:0]  r3a_align_sh;
+  reg        r3a_is_int;
+  reg        r3a_any_nan, r3a_any_inf, r3a_any_zero, r3a_zero_inf, r3a_nv;
+  reg [31:0] r3a_nan_res;
+  reg        r3a_rs;
+  reg [2:0]  r3a_rm;
+  reg [4:0]  r3a_f, r3a_n, r3a_lw;
+  reg [3:0]  r3a_ew;
+  reg        r3a_is_signed, r3a_no_inf, r3a_packed;
+  reg [2:0]  r3a_nlanes;
+  reg [4:0]  r3a_lane_f;
+  reg [3:0]  r3a_lane_ew;
+  reg        r3a_lane_no_inf, r3a_lane_is_int, r3a_lane_signed;
+  reg [4:0]  r3a_lane_lz [0:3];
+  reg [23:0] r3a_lane_prod [0:3];
+  reg signed [9:0] r3a_lane_exp [0:3];
+  reg [5:0]  r3a_lane_f6 [0:3];
+  reg [10:0] r3a_lane_pl [0:3];
+  reg [4:0]  r3a_ln_f [0:3];
+  reg        r3a_ln_is_int [0:3];
 
 
 
@@ -280,8 +329,8 @@ module fp32_mult (
   reg [2:0]  r4_lane_grs  [0:3];
   reg signed [9:0] r4_lane_exp [0:3];
   reg [10:0] r4_lane_fpre [0:3];
-  reg [2:0]  r4_lane_sss  [0:3];
-  reg [1:0]  r4_lane_inc  [0:3];
+  reg [1:0]  r4_lane_sss  [0:3];
+  reg [24:0] r4_lane_pmsk [0:3];
   reg [5:0]  r4_lane_f6   [0:3];
   reg [10:0] r4_lane_pl   [0:3];
   reg [15:0] r4_lane_prod [0:3];
@@ -295,13 +344,76 @@ module fp32_mult (
     if (r1_packed) begin
       s2_ta[0] = r1_lane_sig_a[0]; s2_tb[0] = r1_lane_sig_b[0];
       s2_ta[1] = r1_lane_sig_a[1]; s2_tb[1] = r1_lane_sig_b[1];
-      s2_ta[2] = r1_lane_sig_a[2]; s2_tb[2] = r1_lane_sig_b[2];
-      s2_ta[3] = r1_lane_sig_a[3]; s2_tb[3] = r1_lane_sig_b[3];
+      // power: 2-lane modes leave tiles 2/3 unused -> freeze their inputs
+      s2_ta[2] = (r1_nlanes == 3'd2) ? 12'b0 : r1_lane_sig_a[2];
+      s2_tb[2] = (r1_nlanes == 3'd2) ? 12'b0 : r1_lane_sig_b[2];
+      s2_ta[3] = (r1_nlanes == 3'd2) ? 12'b0 : r1_lane_sig_a[3];
+      s2_tb[3] = (r1_nlanes == 3'd2) ? 12'b0 : r1_lane_sig_b[3];
     end else begin
       s2_ta[0] = r1_sig_a[11:0];  s2_tb[0] = r1_sig_b[11:0];
       s2_ta[1] = r1_sig_a[11:0];  s2_tb[1] = r1_sig_b[23:12];
       s2_ta[2] = r1_sig_a[23:12]; s2_tb[2] = r1_sig_b[11:0];
       s2_ta[3] = r1_sig_a[23:12]; s2_tb[3] = r1_sig_b[23:12];
+    end
+  end
+
+  // ---- 7-stage: S2 split. S2a = 4x 6x6 partial products per tile ----
+  // ----          S2b = 24-bit adder tree (tile sum) ----
+  genvar gt;
+  generate
+    for (gt = 0; gt < 4; gt = gt + 1) begin : g_s2
+      wire [11:0] pp_ll = s2_ta[gt][ 5:0]  * s2_tb[gt][ 5:0];
+      wire [11:0] pp_lh = s2_ta[gt][ 5:0]  * s2_tb[gt][11:6];
+      wire [11:0] pp_hl = s2_ta[gt][11:6]  * s2_tb[gt][ 5:0];
+      wire [11:0] pp_hh = s2_ta[gt][11:6]  * s2_tb[gt][11:6];
+
+      always @(posedge clk) begin
+        if (!stall) begin
+          r2a_pp[gt][0] <= pp_ll;
+          r2a_pp[gt][1] <= pp_lh;
+          r2a_pp[gt][2] <= pp_hl;
+          r2a_pp[gt][3] <= pp_hh;
+        end
+      end
+
+      always @(posedge clk) begin
+        if (!stall) begin
+          r2_tile[gt] <= ({12'b0, r2a_pp[gt][0]})
+                       + ({6'b0, r2a_pp[gt][1]} << 6)
+                       + ({6'b0, r2a_pp[gt][2]} << 6)
+                       + ({12'b0, r2a_pp[gt][3]} << 12);
+        end
+      end
+    end
+  endgenerate
+
+  // ---- 7-stage: S2a scalar param holds (r1 -> r2a -> r2) ----
+  always @(posedge clk) begin
+    if (!stall) begin
+      r2a_any_nan  <= r1_any_nan;
+      r2a_any_inf  <= r1_any_inf;
+      r2a_any_zero <= r1_any_zero;
+      r2a_zero_inf <= r1_zero_inf;
+      r2a_nv       <= r1_nv;
+      r2a_nan_res  <= r1_nan_res;
+      r2a_rs       <= r1_rs;
+      r2a_exp_sum  <= r1_exp_sum;
+      r2a_rm       <= r1_rm;
+      r2a_f        <= r1_f;
+      r2a_ew       <= r1_ew;
+      r2a_n        <= r1_n;
+      r2a_align_sh <= r1_align_sh;
+      r2a_is_int   <= r1_is_int;
+      r2a_is_signed <= r1_is_signed;
+      r2a_no_inf   <= r1_no_inf;
+      r2a_packed   <= r1_packed;
+      r2a_nlanes   <= r1_nlanes;
+      r2a_lw       <= r1_lw;
+      r2a_lane_f   <= r1_lane_f;
+      r2a_lane_ew  <= r1_lane_ew;
+      r2a_lane_no_inf <= r1_lane_no_inf;
+      r2a_lane_is_int <= r1_lane_is_int;
+      r2a_lane_signed <= r1_lane_signed;
     end
   end
 
@@ -379,56 +491,82 @@ module fp32_mult (
           r1_lane_exp[gi]   <= ln_exp_sum;
           r1_lane_f6[gi]    <= {ln_rs, ln_any_nan, ln_any_inf, ln_any_zero, ln_zero_inf, ln_nv};
           r1_lane_pl[gi]    <= ln_pl[10:0];
-          r2_lane_exp[gi]   <= r1_lane_exp[gi];
-          r2_lane_f6[gi]    <= r1_lane_f6[gi];
-          r2_lane_pl[gi]    <= r1_lane_pl[gi];
+          r2a_lane_exp[gi]  <= r1_lane_exp[gi];
+          r2a_lane_f6[gi]   <= r1_lane_f6[gi];
+          r2a_lane_pl[gi]   <= r1_lane_pl[gi];
+        end
+      end
+
+      // ---- 7-stage: r2 lane holds (S2a -> S2b) ----
+      always @(posedge clk) begin
+        if (!stall) begin
+          r2_lane_exp[gi] <= r2a_lane_exp[gi];
+          r2_lane_f6[gi]  <= r2a_lane_f6[gi];
+          r2_lane_pl[gi]  <= r2a_lane_pl[gi];
         end
       end
 
       // ---------------- S3: per-lane normalize ----------------
       wire [23:0] ln_prod = r2_tile[gi];
+      // power: INT lanes skip the LZ + shift cone entirely
+      wire [23:0] ln_prod_lz = r2_lane_is_int ? 24'b0 : ln_prod;
 
-      wire [3:0] ln_lz8_0 = ln_prod[ 7] ? 4'd0 : ln_prod[ 6] ? 4'd1 :
+      wire [3:0] ln_lz8_0 = ln_prod_lz[ 7] ? 4'd0 : ln_prod_lz[ 6] ? 4'd1 :
                             ln_prod[ 5] ? 4'd2 : ln_prod[ 4] ? 4'd3 :
                             ln_prod[ 3] ? 4'd4 : ln_prod[ 2] ? 4'd5 :
                             ln_prod[ 1] ? 4'd6 : ln_prod[ 0] ? 4'd7 : 4'd8;
-      wire [3:0] ln_lz8_1 = ln_prod[15] ? 4'd0 : ln_prod[14] ? 4'd1 :
-                            ln_prod[13] ? 4'd2 : ln_prod[12] ? 4'd3 :
-                            ln_prod[11] ? 4'd4 : ln_prod[10] ? 4'd5 :
-                            ln_prod[ 9] ? 4'd6 : ln_prod[ 8] ? 4'd7 : 4'd8;
-      wire [3:0] ln_lz8_2 = ln_prod[23] ? 4'd0 : ln_prod[22] ? 4'd1 :
-                            ln_prod[21] ? 4'd2 : ln_prod[20] ? 4'd3 :
-                            ln_prod[19] ? 4'd4 : ln_prod[18] ? 4'd5 :
-                            ln_prod[17] ? 4'd6 : ln_prod[16] ? 4'd7 : 4'd8;
-      wire ln_g0 = |ln_prod[ 7: 0];
-      wire ln_g1 = |ln_prod[15: 8];
-      wire ln_g2 = |ln_prod[23:16];
+      wire [3:0] ln_lz8_1 = ln_prod_lz[15] ? 4'd0 : ln_prod_lz[14] ? 4'd1 :
+                            ln_prod_lz[13] ? 4'd2 : ln_prod_lz[12] ? 4'd3 :
+                            ln_prod_lz[11] ? 4'd4 : ln_prod_lz[10] ? 4'd5 :
+                            ln_prod_lz[ 9] ? 4'd6 : ln_prod_lz[ 8] ? 4'd7 : 4'd8;
+      wire [3:0] ln_lz8_2 = ln_prod_lz[23] ? 4'd0 : ln_prod_lz[22] ? 4'd1 :
+                            ln_prod_lz[21] ? 4'd2 : ln_prod_lz[20] ? 4'd3 :
+                            ln_prod_lz[19] ? 4'd4 : ln_prod_lz[18] ? 4'd5 :
+                            ln_prod_lz[17] ? 4'd6 : ln_prod_lz[16] ? 4'd7 : 4'd8;
+      wire ln_g0 = |ln_prod_lz[ 7: 0];
+      wire ln_g1 = |ln_prod_lz[15: 8];
+      wire ln_g2 = |ln_prod_lz[23:16];
       wire [4:0] ln_lz = ln_g2 ? {1'b0, ln_lz8_2}
                        : ln_g1 ? 5'd8 + {1'b0, ln_lz8_1}
                        : ln_g0 ? 5'd16 + {1'b0, ln_lz8_0}
                        : 5'd24;
 
-      wire [23:0] ln_pn    = ln_prod << ln_lz;
-      wire [23:0] ln_pa    = ln_pn >> (6'd11 - {1'b0, r2_lane_f});
+      // ---- 7-stage: S3a per-lane registers (LZ only, no shift) ----
+      always @(posedge clk) begin
+        if (!stall) begin
+          r3a_lane_prod[gi] <= ln_prod;
+          r3a_lane_lz[gi]   <= ln_lz;
+          r3a_lane_exp[gi]  <= r2_lane_exp[gi] + 10'sd1 - $signed({5'b0, ln_lz});
+          r3a_lane_f6[gi]   <= r2_lane_f6[gi];
+          r3a_lane_pl[gi]   <= r2_lane_pl[gi];
+          r3a_ln_f[gi]      <= r2_lane_f;
+          r3a_ln_is_int[gi] <= r2_lane_is_int;
+        end
+      end
+
+      // ---- 7-stage: S3b per-lane comb (combined bidirectional shift) ----
+      wire [4:0]  ln_align = 5'd11 - {1'b0, r3a_ln_f[gi]};
+      wire [23:0] ln_pa    = (r3a_lane_lz[gi] >= ln_align)
+                           ? (r3a_lane_prod[gi] << (r3a_lane_lz[gi] - ln_align))
+                           : (r3a_lane_prod[gi] >> (ln_align - r3a_lane_lz[gi]));
       wire [11:0] ln_m     = ln_pa[23:12];
       wire        ln_g     = ln_pa[11];
       wire        ln_r     = ln_pa[10];
       wire        ln_s     = |ln_pa[9:0];
-      wire signed [9:0] ln_e3 = r2_lane_exp[gi] + 10'sd1 - $signed({5'b0, ln_lz});
 
       always @(posedge clk) begin
         if (!stall) begin
-          r3_lane_pa[gi]   <= r2_lane_is_int ? ln_prod : ln_pa;
+          r3_lane_pa[gi]   <= r3a_ln_is_int[gi] ? r3a_lane_prod[gi] : ln_pa;
           r3_lane_m[gi]    <= ln_m;
           r3_lane_grs[gi]  <= {ln_g, ln_r, ln_s};
-          r3_lane_exp[gi]  <= ln_e3;
-          r3_lane_f6[gi]   <= r2_lane_f6[gi];
-          r3_lane_pl[gi]   <= r2_lane_pl[gi];
-          r3_lane_prod[gi] <= ln_prod[15:0];
+          r3_lane_exp[gi]  <= r3a_lane_exp[gi];
+          r3_lane_f6[gi]   <= r3a_lane_f6[gi];
+          r3_lane_pl[gi]   <= r3a_lane_pl[gi];
+          r3_lane_prod[gi] <= r3a_lane_prod[gi][15:0];
         end
       end
 
-      // ---------------- S4: per-lane round ----------------
+      // ---------------- S4a: per-lane subnormal shift + sticky mask ----------------
       wire [7:0] ln_k  = 8'd13 - r3_lane_exp[gi][7:0];
       wire [4:0] ln_ks = (ln_k >= 8'd24) ? 5'd0 : ln_k[4:0];
       wire [10:0] ln_fpre = (ln_k >= 8'd24) ? 11'b0
@@ -437,29 +575,9 @@ module fp32_mult (
       wire [4:0] ln_kr = (ln_k >= 8'd2 && ln_k <= 8'd25) ? (ln_k[4:0] - 5'd2) : 5'd0;
       wire ln_sg = (ln_k >= 8'd1 && ln_k <= 8'd24) ? r3_lane_pa[gi][ln_kg] : 1'b0;
       wire ln_sr = (ln_k >= 8'd2 && ln_k <= 8'd25) ? r3_lane_pa[gi][ln_kr] : 1'b0;
-      wire ln_ss = (ln_k <= 8'd26)
-                   ? |({1'b0, r3_lane_pa[gi]} & ((25'd1 << (ln_k[4:0] - 5'd2)) - 25'd1))
-                   : 1'b1;
-      wire ln_inc_n;
-      wire ln_inc_s;
-      fp32_rnd_inc u_rnd_n (
-          .g   (r3_lane_grs[gi][2]),
-          .r   (r3_lane_grs[gi][1]),
-          .s   (r3_lane_grs[gi][0]),
-          .lsb (r3_lane_m[gi][0]),
-          .sgn (r3_lane_f6[gi][5]),
-          .rm  (r3_rm),
-          .inc (ln_inc_n)
-      );
-      fp32_rnd_inc u_rnd_s (
-          .g   (ln_sg),
-          .r   (ln_sr),
-          .s   (ln_ss),
-          .lsb (ln_fpre[0]),
-          .sgn (r3_lane_f6[gi][5]),
-          .rm  (r3_rm),
-          .inc (ln_inc_s)
-      );
+      wire [24:0] ln_pmsk = (ln_k <= 8'd26)
+                   ? ({1'b0, r3_lane_pa[gi]} & ((25'd1 << (ln_k[4:0] - 5'd2)) - 25'd1))
+                   : {1'b0, r3_lane_pa[gi]};
 
       always @(posedge clk) begin
         if (!stall) begin
@@ -467,21 +585,43 @@ module fp32_mult (
           r4_lane_grs[gi]  <= r3_lane_grs[gi];
           r4_lane_exp[gi]  <= r3_lane_exp[gi];
           r4_lane_fpre[gi] <= ln_fpre;
-          r4_lane_sss[gi]  <= {ln_sg, ln_sr, ln_ss};
-          r4_lane_inc[gi]  <= {ln_inc_n, ln_inc_s};
+          r4_lane_sss[gi]  <= {ln_sg, ln_sr};
+          r4_lane_pmsk[gi] <= ln_pmsk;
           r4_lane_f6[gi]   <= r3_lane_f6[gi];
           r4_lane_pl[gi]   <= r3_lane_pl[gi];
           r4_lane_prod[gi] <= r3_lane_prod[gi];
         end
       end
 
-      // ---------------- S5: per-lane pack ----------------
-      wire [12:0] ln_mr    = {1'b0, r4_lane_m[gi]} + {12'b0, r4_lane_inc[gi][1]};
+      // ---------------- S5: per-lane pack (inc + resolve, 7-stage) ----------------
+      wire        ln_ss_b  = |r4_lane_pmsk[gi];
+      wire        ln_inex  = ln_ss_b | r4_lane_sss[gi][1] | r4_lane_sss[gi][0];
+      wire        ln_inc_n;
+      wire        ln_inc_s;
+      fp32_rnd_inc u_rnd_n (
+          .g   (r4_lane_grs[gi][2]),
+          .r   (r4_lane_grs[gi][1]),
+          .s   (r4_lane_grs[gi][0]),
+          .lsb (r4_lane_m[gi][0]),
+          .sgn (r4_lane_f6[gi][5]),
+          .rm  (r4_rm),
+          .inc (ln_inc_n)
+      );
+      fp32_rnd_inc u_rnd_s (
+          .g   (r4_lane_sss[gi][1]),
+          .r   (r4_lane_sss[gi][0]),
+          .s   (ln_ss_b),
+          .lsb (r4_lane_fpre[gi][0]),
+          .sgn (r4_lane_f6[gi][5]),
+          .rm  (r4_rm),
+          .inc (ln_inc_s)
+      );
+      wire [12:0] ln_mr    = {1'b0, r4_lane_m[gi]} + {12'b0, ln_inc_n};
       wire        ln_carry = ln_mr[r4_lane_f[3:0] + 4'd1];
       wire signed [9:0] ln_ef = r4_lane_exp[gi] + $signed({9'b0, ln_carry});
       wire [11:0] ln_fm   = (12'd1 << {7'b0, r4_lane_f}) - 12'd1;
       wire [11:0] ln_frac = ln_carry ? 12'b0 : (ln_mr[11:0] & ln_fm);
-      wire [11:0] ln_fsub = {1'b0, r4_lane_fpre[gi]} + {11'b0, r4_lane_inc[gi][0]};
+      wire [11:0] ln_fsub = {1'b0, r4_lane_fpre[gi]} + {11'b0, ln_inc_s};
       wire        ln_scarry = ln_fsub[r4_lane_f[3:0]];
       wire [11:0] ln_ffrac = ln_fsub & ln_fm;
       wire [7:0]  ln_thr   = (8'd1 << {4'b0, r4_lane_ew}) - 8'd1;
@@ -520,7 +660,7 @@ module fp32_mult (
         end else if (r4_lane_f6[gi][2]) begin
           ln_res = {15'b0, r4_lane_f6[gi][5]} << (ln_lw4 - 5'd1);
         end else if (r4_lane_exp[gi] <= 10'sd0) begin
-          ln_fl = {1'b0, 1'b0, |r4_lane_sss[gi], |r4_lane_sss[gi]};
+          ln_fl = {1'b0, 1'b0, ln_inex, ln_inex};
           if (ln_scarry) ln_res = ln_mn_pat;
           else           ln_res = ({15'b0, r4_lane_f6[gi][5]} << (ln_lw4 - 5'd1)) | {4'b0, ln_ffrac};
         end else begin
@@ -558,37 +698,40 @@ module fp32_mult (
                       + (({24'b0, r2_tile[2]} + {24'b0, r2_tile[1]}) << 12)
                       + {24'b0, r2_tile[0]};
 
-  wire [3:0] s3_lz8_0 = s3_prod[ 7] ? 4'd0 : s3_prod[ 6] ? 4'd1 :
+  // power: INT results skip the LZ + shift cone entirely
+  wire [47:0] s3_prod_lz = r2_is_int ? 48'b0 : s3_prod;
+
+  wire [3:0] s3_lz8_0 = s3_prod_lz[ 7] ? 4'd0 : s3_prod_lz[ 6] ? 4'd1 :
                         s3_prod[ 5] ? 4'd2 : s3_prod[ 4] ? 4'd3 :
                         s3_prod[ 3] ? 4'd4 : s3_prod[ 2] ? 4'd5 :
                         s3_prod[ 1] ? 4'd6 : s3_prod[ 0] ? 4'd7 : 4'd8;
-  wire [3:0] s3_lz8_1 = s3_prod[15] ? 4'd0 : s3_prod[14] ? 4'd1 :
-                        s3_prod[13] ? 4'd2 : s3_prod[12] ? 4'd3 :
-                        s3_prod[11] ? 4'd4 : s3_prod[10] ? 4'd5 :
-                        s3_prod[ 9] ? 4'd6 : s3_prod[ 8] ? 4'd7 : 4'd8;
-  wire [3:0] s3_lz8_2 = s3_prod[23] ? 4'd0 : s3_prod[22] ? 4'd1 :
-                        s3_prod[21] ? 4'd2 : s3_prod[20] ? 4'd3 :
-                        s3_prod[19] ? 4'd4 : s3_prod[18] ? 4'd5 :
-                        s3_prod[17] ? 4'd6 : s3_prod[16] ? 4'd7 : 4'd8;
-  wire [3:0] s3_lz8_3 = s3_prod[31] ? 4'd0 : s3_prod[30] ? 4'd1 :
-                        s3_prod[29] ? 4'd2 : s3_prod[28] ? 4'd3 :
-                        s3_prod[27] ? 4'd4 : s3_prod[26] ? 4'd5 :
-                        s3_prod[25] ? 4'd6 : s3_prod[24] ? 4'd7 : 4'd8;
-  wire [3:0] s3_lz8_4 = s3_prod[39] ? 4'd0 : s3_prod[38] ? 4'd1 :
-                        s3_prod[37] ? 4'd2 : s3_prod[36] ? 4'd3 :
-                        s3_prod[35] ? 4'd4 : s3_prod[34] ? 4'd5 :
-                        s3_prod[33] ? 4'd6 : s3_prod[32] ? 4'd7 : 4'd8;
-  wire [3:0] s3_lz8_5 = s3_prod[47] ? 4'd0 : s3_prod[46] ? 4'd1 :
-                        s3_prod[45] ? 4'd2 : s3_prod[44] ? 4'd3 :
-                        s3_prod[43] ? 4'd4 : s3_prod[42] ? 4'd5 :
-                        s3_prod[41] ? 4'd6 : s3_prod[40] ? 4'd7 : 4'd8;
+  wire [3:0] s3_lz8_1 = s3_prod_lz[15] ? 4'd0 : s3_prod_lz[14] ? 4'd1 :
+                        s3_prod_lz[13] ? 4'd2 : s3_prod_lz[12] ? 4'd3 :
+                        s3_prod_lz[11] ? 4'd4 : s3_prod_lz[10] ? 4'd5 :
+                        s3_prod_lz[ 9] ? 4'd6 : s3_prod_lz[ 8] ? 4'd7 : 4'd8;
+  wire [3:0] s3_lz8_2 = s3_prod_lz[23] ? 4'd0 : s3_prod_lz[22] ? 4'd1 :
+                        s3_prod_lz[21] ? 4'd2 : s3_prod_lz[20] ? 4'd3 :
+                        s3_prod_lz[19] ? 4'd4 : s3_prod_lz[18] ? 4'd5 :
+                        s3_prod_lz[17] ? 4'd6 : s3_prod_lz[16] ? 4'd7 : 4'd8;
+  wire [3:0] s3_lz8_3 = s3_prod_lz[31] ? 4'd0 : s3_prod_lz[30] ? 4'd1 :
+                        s3_prod_lz[29] ? 4'd2 : s3_prod_lz[28] ? 4'd3 :
+                        s3_prod_lz[27] ? 4'd4 : s3_prod_lz[26] ? 4'd5 :
+                        s3_prod_lz[25] ? 4'd6 : s3_prod_lz[24] ? 4'd7 : 4'd8;
+  wire [3:0] s3_lz8_4 = s3_prod_lz[39] ? 4'd0 : s3_prod_lz[38] ? 4'd1 :
+                        s3_prod_lz[37] ? 4'd2 : s3_prod_lz[36] ? 4'd3 :
+                        s3_prod_lz[35] ? 4'd4 : s3_prod_lz[34] ? 4'd5 :
+                        s3_prod_lz[33] ? 4'd6 : s3_prod_lz[32] ? 4'd7 : 4'd8;
+  wire [3:0] s3_lz8_5 = s3_prod_lz[47] ? 4'd0 : s3_prod_lz[46] ? 4'd1 :
+                        s3_prod_lz[45] ? 4'd2 : s3_prod_lz[44] ? 4'd3 :
+                        s3_prod_lz[43] ? 4'd4 : s3_prod_lz[42] ? 4'd5 :
+                        s3_prod_lz[41] ? 4'd6 : s3_prod_lz[40] ? 4'd7 : 4'd8;
 
-  wire s3_g0 = |s3_prod[ 7: 0];
-  wire s3_g1 = |s3_prod[15: 8];
-  wire s3_g2 = |s3_prod[23:16];
-  wire s3_g3 = |s3_prod[31:24];
-  wire s3_g4 = |s3_prod[39:32];
-  wire s3_g5 = |s3_prod[47:40];
+  wire s3_g0 = |s3_prod_lz[ 7: 0];
+  wire s3_g1 = |s3_prod_lz[15: 8];
+  wire s3_g2 = |s3_prod_lz[23:16];
+  wire s3_g3 = |s3_prod_lz[31:24];
+  wire s3_g4 = |s3_prod_lz[39:32];
+  wire s3_g5 = |s3_prod_lz[47:40];
 
   wire [5:0] s3_lz = s3_g5 ? {2'b0, s3_lz8_5}
                    : s3_g4 ? 6'd8  + {2'b0, s3_lz8_4}
@@ -598,17 +741,51 @@ module fp32_mult (
                    : s3_g0 ? 6'd40 + {2'b0, s3_lz8_0}
                    : 6'd48;
 
-  wire [47:0] s3_psh    = s3_prod << s3_lz;
-  wire [47:0] s3_align  = s3_psh >> r2_align_sh;
-  wire [47:0] r3_psh_nxt = r2_is_int ? s3_prod : s3_align;
+  // ---- 7-stage: S3a registers (merge + LZ only, no shift) ----
+  always @(posedge clk) begin
+    if (!stall) begin
+      r3a_prod     <= s3_prod;
+      r3a_lz       <= s3_lz;
+      r3a_exp      <= r2_exp_sum + 10'sd1 - $signed({4'b0, s3_lz});
+      r3a_align_sh <= r2_align_sh;
+      r3a_is_int   <= r2_is_int;
+      r3a_any_nan  <= r2_any_nan;
+      r3a_any_inf  <= r2_any_inf;
+      r3a_any_zero <= r2_any_zero;
+      r3a_zero_inf <= r2_zero_inf;
+      r3a_nv       <= r2_nv;
+      r3a_nan_res  <= r2_nan_res;
+      r3a_rs       <= r2_rs;
+      r3a_rm       <= r2_rm;
+      r3a_f        <= r2_f;
+      r3a_ew       <= r2_ew;
+      r3a_n        <= r2_n;
+      r3a_is_signed <= r2_is_signed;
+      r3a_no_inf   <= r2_no_inf;
+      r3a_packed   <= r2_packed;
+      r3a_nlanes   <= r2_nlanes;
+      r3a_lw       <= r2_lw;
+      r3a_lane_f   <= r2_lane_f;
+      r3a_lane_ew  <= r2_lane_ew;
+      r3a_lane_no_inf <= r2_lane_no_inf;
+      r3a_lane_is_int <= r2_lane_is_int;
+      r3a_lane_signed <= r2_lane_signed;
+    end
+  end
+
+  // ---- 7-stage: S3b comb (combined bidirectional shift + extract) ----
+  wire [47:0] s3_align  = (r3a_lz >= r3a_align_sh)
+                        ? (r3a_prod << (r3a_lz - r3a_align_sh))
+                        : (r3a_prod >> (r3a_align_sh - r3a_lz));
+  wire [47:0] r3_psh_nxt = r3a_is_int ? r3a_prod : s3_align;
   wire [23:0] r3_m_nxt   = r3_psh_nxt[47:24];
   wire        r3_g_nxt   = r3_psh_nxt[23];
   wire        r3_r_nxt   = r3_psh_nxt[22];
   wire        r3_s_nxt   = |r3_psh_nxt[21:0];
-  wire signed [9:0] r3_exp_nxt = r2_exp_sum + 10'sd1 - $signed({4'b0, s3_lz});
+  wire signed [9:0] r3_exp_nxt = r3a_exp;
 
   // ==========================================================================
-  // S4 scalar: rounding decisions + subnormal alignment
+  // S4a scalar: subnormal alignment shift + sticky mask (no round-inc here)
   // ==========================================================================
   wire [7:0] s4_k = 8'd25 - r3_exp[7:0];
   wire [22:0] r4_fpre_nxt = (s4_k >= 8'd48) ? 23'b0 : 23'(r3_psh >> s4_k[5:0]);
@@ -616,32 +793,32 @@ module fp32_mult (
   wire [5:0] s4_idx_r = (s4_k >= 8'd2 && s4_k <= 8'd49) ? (s4_k[5:0] - 6'd2) : 6'd0;
   wire r4_sg_nxt = (s4_k >= 8'd1 && s4_k <= 8'd48) ? r3_psh[s4_idx_g] : 1'b0;
   wire r4_sr_nxt = (s4_k >= 8'd2 && s4_k <= 8'd49) ? r3_psh[s4_idx_r] : 1'b0;
-  wire r4_ss_nxt = (s4_k <= 8'd50)
-                   ? |(r3_psh & ((48'd1 << (s4_k[5:0] - 6'd2)) - 48'd1))
-                   : |r3_psh;
+  wire [47:0] r4_psh_msk_nxt = (s4_k <= 8'd50)
+                   ? (r3_psh & ((48'd1 << (s4_k[5:0] - 6'd2)) - 48'd1))
+                   : r3_psh;
 
-  wire r4_inc_n_nxt;
-  wire r4_inc_s_nxt;
+  // ==========================================================================
+  // S5 scalar: round-inc + exponent fix, overflow/subnormal, special resolve
+  // ==========================================================================
+  wire r4_ss_c = |r4_psh_msk;
+  wire r4_inc_n_c;
+  wire r4_inc_s_c;
   fp32_rnd_inc u_rnd_n (
-      .g   (r3_g), .r   (r3_r), .s   (r3_s),
-      .lsb (r3_m[0]), .sgn (r3_rs), .rm  (r3_rm), .inc (r4_inc_n_nxt)
+      .g   (r4_g), .r   (r4_r), .s   (r4_s),
+      .lsb (r4_m[0]), .sgn (r4_rs), .rm  (r4_rm), .inc (r4_inc_n_c)
   );
   fp32_rnd_inc u_rnd_s (
-      .g   (r4_sg_nxt), .r   (r4_sr_nxt), .s   (r4_ss_nxt),
-      .lsb (r4_fpre_nxt[0]), .sgn (r3_rs), .rm  (r3_rm), .inc (r4_inc_s_nxt)
+      .g   (r4_sg), .r   (r4_sr), .s   (r4_ss_c),
+      .lsb (r4_fpre[0]), .sgn (r4_rs), .rm  (r4_rm), .inc (r4_inc_s_c)
   );
-
-  // ==========================================================================
-  // S5 scalar: exponent fix, overflow/subnormal handling, special resolve
-  // ==========================================================================
   /* verilator lint_off UNUSEDSIGNAL */  // s5_mr[23] is the implicit leading 1
-  wire [24:0] s5_mr = {1'b0, r4_m} + {24'b0, r4_inc_n};
+  wire [24:0] s5_mr = {1'b0, r4_m} + {24'b0, r4_inc_n_c};
   /* verilator lint_on UNUSEDSIGNAL */
   wire s5_mcarry = s5_mr[{27'b0, r4_f} + 32'd1];
   wire signed [9:0] s5_expn = r4_exp + $signed({9'b0, s5_mcarry});
   wire [31:0] s5_mfrac = s5_mcarry ? 32'b0
                                    : ({7'b0, s5_mr} & ((32'd1 << {27'b0, r4_f}) - 32'd1));
-  wire [23:0] s5_fsub  = {1'b0, r4_fpre} + {23'b0, r4_inc_s};
+  wire [23:0] s5_fsub  = {1'b0, r4_fpre} + {23'b0, r4_inc_s_c};
   wire        s5_scarry = s5_fsub[r4_f];
   wire [31:0] s5_ffrac  = {8'b0, s5_fsub} & ((32'd1 << {27'b0, r4_f}) - 32'd1);
 
@@ -665,7 +842,7 @@ module fp32_mult (
     s5_nx = 1'b0;
     s5_res = 32'b0;
     if (r4_exp <= 10'sd0) begin
-      s5_nx = r4_sg | r4_sr | r4_ss;
+      s5_nx = r4_sg | r4_sr | r4_ss_c;
       s5_uf = s5_nx;
       if (s5_scarry) begin
         s5_res = ({31'b0, r4_rs} << 31) | (32'd1 << (6'd31 - {2'b0, r4_ew}));
@@ -770,13 +947,17 @@ module fp32_mult (
     if (!rst_n) begin
       r1_valid <= 1'b0;
       r2_valid <= 1'b0;
+      r2a_valid <= 1'b0;
+      r3a_valid <= 1'b0;
       r3_valid <= 1'b0;
       r4_valid <= 1'b0;
       r5_valid <= 1'b0;
     end else if (!stall) begin
       r1_valid <= in_valid;
-      r2_valid <= r1_valid;
-      r3_valid <= r2_valid;
+      r2_valid <= r2a_valid;
+      r2a_valid <= r1_valid;
+      r3a_valid <= r2_valid;
+      r3_valid <= r3a_valid;
       r4_valid <= r3_valid;
       r5_valid <= r4_valid;
     end
@@ -811,63 +992,59 @@ module fp32_mult (
       r1_lane_is_int <= s1_lane_is_int;
       r1_lane_signed <= s1_lane_signed;
 
-      r2_tile[0] <= s2_ta[0] * s2_tb[0];
-      r2_tile[1] <= s2_ta[1] * s2_tb[1];
-      r2_tile[2] <= s2_ta[2] * s2_tb[2];
-      r2_tile[3] <= s2_ta[3] * s2_tb[3];
-      r2_any_nan  <= r1_any_nan;
-      r2_any_inf  <= r1_any_inf;
-      r2_any_zero <= r1_any_zero;
-      r2_zero_inf <= r1_zero_inf;
-      r2_nv       <= r1_nv;
-      r2_nan_res  <= r1_nan_res;
-      r2_rs       <= r1_rs;
-      r2_exp_sum  <= r1_exp_sum;
-      r2_rm       <= r1_rm;
-      r2_f        <= r1_f;
-      r2_ew       <= r1_ew;
-      r2_n        <= r1_n;
-      r2_align_sh <= r1_align_sh;
-      r2_is_int   <= r1_is_int;
-      r2_is_signed <= r1_is_signed;
-      r2_no_inf   <= r1_no_inf;
-      r2_packed   <= r1_packed;
-      r2_nlanes   <= r1_nlanes;
-      r2_lw       <= r1_lw;
-      r2_lane_f   <= r1_lane_f;
-      r2_lane_ew  <= r1_lane_ew;
-      r2_lane_no_inf <= r1_lane_no_inf;
-      r2_lane_is_int <= r1_lane_is_int;
-      r2_lane_signed <= r1_lane_signed;
+      r2_any_nan  <= r2a_any_nan;
+      r2_any_inf  <= r2a_any_inf;
+      r2_any_zero <= r2a_any_zero;
+      r2_zero_inf <= r2a_zero_inf;
+      r2_nv       <= r2a_nv;
+      r2_nan_res  <= r2a_nan_res;
+      r2_rs       <= r2a_rs;
+      r2_exp_sum  <= r2a_exp_sum;
+      r2_rm       <= r2a_rm;
+      r2_f        <= r2a_f;
+      r2_ew       <= r2a_ew;
+      r2_n        <= r2a_n;
+      r2_align_sh <= r2a_align_sh;
+      r2_is_int   <= r2a_is_int;
+      r2_is_signed <= r2a_is_signed;
+      r2_no_inf   <= r2a_no_inf;
+      r2_packed   <= r2a_packed;
+      r2_nlanes   <= r2a_nlanes;
+      r2_lw       <= r2a_lw;
+      r2_lane_f   <= r2a_lane_f;
+      r2_lane_ew  <= r2a_lane_ew;
+      r2_lane_no_inf <= r2a_lane_no_inf;
+      r2_lane_is_int <= r2a_lane_is_int;
+      r2_lane_signed <= r2a_lane_signed;
 
-      r3_any_nan  <= r2_any_nan;
-      r3_any_inf  <= r2_any_inf;
-      r3_any_zero <= r2_any_zero;
-      r3_zero_inf <= r2_zero_inf;
-      r3_nv       <= r2_nv;
-      r3_nan_res  <= r2_nan_res;
-      r3_rs       <= r2_rs;
+      r3_any_nan <= r3a_any_nan;
+      r3_any_inf <= r3a_any_inf;
+      r3_any_zero <= r3a_any_zero;
+      r3_zero_inf <= r3a_zero_inf;
+      r3_nv <= r3a_nv;
+      r3_nan_res <= r3a_nan_res;
+      r3_rs <= r3a_rs;
       r3_exp      <= r3_exp_nxt;
       r3_m        <= r3_m_nxt;
       r3_g        <= r3_g_nxt;
       r3_r        <= r3_r_nxt;
       r3_s        <= r3_s_nxt;
       r3_psh      <= r3_psh_nxt;
-      r3_rm       <= r2_rm;
-      r3_f        <= r2_f;
-      r3_ew       <= r2_ew;
-      r3_n        <= r2_n;
-      r3_is_int   <= r2_is_int;
-      r3_is_signed <= r2_is_signed;
-      r3_no_inf   <= r2_no_inf;
-      r3_packed   <= r2_packed;
-      r3_nlanes   <= r2_nlanes;
-      r3_lw       <= r2_lw;
-      r3_lane_f   <= r2_lane_f;
-      r3_lane_ew  <= r2_lane_ew;
-      r3_lane_no_inf <= r2_lane_no_inf;
-      r3_lane_is_int <= r2_lane_is_int;
-      r3_lane_signed <= r2_lane_signed;
+      r3_rm <= r3a_rm;
+      r3_f <= r3a_f;
+      r3_ew <= r3a_ew;
+      r3_n <= r3a_n;
+      r3_is_int <= r3a_is_int;
+      r3_is_signed <= r3a_is_signed;
+      r3_no_inf <= r3a_no_inf;
+      r3_packed <= r3a_packed;
+      r3_nlanes <= r3a_nlanes;
+      r3_lw <= r3a_lw;
+      r3_lane_f <= r3a_lane_f;
+      r3_lane_ew <= r3a_lane_ew;
+      r3_lane_no_inf <= r3a_lane_no_inf;
+      r3_lane_is_int <= r3a_lane_is_int;
+      r3_lane_signed <= r3a_lane_signed;
 
       r4_any_nan  <= r3_any_nan;
       r4_any_inf  <= r3_any_inf;
@@ -885,9 +1062,7 @@ module fp32_mult (
       r4_fpre     <= r4_fpre_nxt;
       r4_sg       <= r4_sg_nxt;
       r4_sr       <= r4_sr_nxt;
-      r4_ss       <= r4_ss_nxt;
-      r4_inc_n    <= r4_inc_n_nxt;
-      r4_inc_s    <= r4_inc_s_nxt;
+      r4_psh_msk  <= r4_psh_msk_nxt;
       r4_rm       <= r3_rm;
       r4_f        <= r3_f;
       r4_ew       <= r3_ew;

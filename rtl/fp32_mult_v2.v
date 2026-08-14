@@ -1,6 +1,7 @@
 // =============================================================================
-// fp32_mult : 5-stage pipelined multi-format multiplier with SIMD packing
-// VARIANT  : V1 基线版（5 级）——仓库默认 RTL，make sim / lint 使用
+// fp32_mult : 6-stage pipelined multi-format multiplier with SIMD packing
+// VARIANT  : V2（6 级，S3 切分为 S3a/S3b）
+//   (S3-split variant: S3a merge+LZ+shift, S3b align+extract)
 //   FP (IEEE 754 semantics): FP32, FP16, BF16, TF32, BF32, FP8-E5M2,
 //                            FP8-E4M3FN, FP4-E2M1
 //   INT (wrap): INT4/INT8/INT16, signed/unsigned
@@ -117,6 +118,32 @@ module fp32_mult (
   reg        r4_lane_no_inf, r4_lane_is_int, r4_lane_signed;
   reg [63:0] r5_result;
   reg [15:0] r5_fflags;
+
+  // ---- 6-stage variant: S3a stage registers ----
+  reg        r3a_valid;
+  reg [47:0] r3a_prod;
+  reg [47:0] r3a_psh;
+  reg signed [9:0] r3a_exp;
+  reg [5:0]  r3a_align_sh;
+  reg        r3a_is_int;
+  reg        r3a_any_nan, r3a_any_inf, r3a_any_zero, r3a_zero_inf, r3a_nv;
+  reg [31:0] r3a_nan_res;
+  reg        r3a_rs;
+  reg [2:0]  r3a_rm;
+  reg [4:0]  r3a_f, r3a_n, r3a_lw;
+  reg [3:0]  r3a_ew;
+  reg        r3a_is_signed, r3a_no_inf, r3a_packed;
+  reg [2:0]  r3a_nlanes;
+  reg [4:0]  r3a_lane_f;
+  reg [3:0]  r3a_lane_ew;
+  reg        r3a_lane_no_inf, r3a_lane_is_int, r3a_lane_signed;
+  reg [23:0] r3a_lane_pn [0:3];
+  reg [23:0] r3a_lane_prod [0:3];
+  reg signed [9:0] r3a_lane_exp [0:3];
+  reg [5:0]  r3a_lane_f6 [0:3];
+  reg [10:0] r3a_lane_pl [0:3];
+  reg [4:0]  r3a_ln_f [0:3];
+  reg        r3a_ln_is_int [0:3];
 
 
 
@@ -409,22 +436,36 @@ module fp32_mult (
                        : 5'd24;
 
       wire [23:0] ln_pn    = ln_prod << ln_lz;
-      wire [23:0] ln_pa    = ln_pn >> (6'd11 - {1'b0, r2_lane_f});
+
+      // ---- 6-stage: S3a per-lane registers (shift + params hold) ----
+      always @(posedge clk) begin
+        if (!stall) begin
+          r3a_lane_pn[gi]   <= ln_pn;
+          r3a_lane_prod[gi] <= ln_prod;
+          r3a_lane_exp[gi]  <= r2_lane_exp[gi] + 10'sd1 - $signed({5'b0, ln_lz});
+          r3a_lane_f6[gi]   <= r2_lane_f6[gi];
+          r3a_lane_pl[gi]   <= r2_lane_pl[gi];
+          r3a_ln_f[gi]      <= r2_lane_f;
+          r3a_ln_is_int[gi] <= r2_lane_is_int;
+        end
+      end
+
+      // ---- 6-stage: S3b per-lane comb (align + extract) ----
+      wire [23:0] ln_pa    = r3a_lane_pn[gi] >> (6'd11 - {1'b0, r3a_ln_f[gi]});
       wire [11:0] ln_m     = ln_pa[23:12];
       wire        ln_g     = ln_pa[11];
       wire        ln_r     = ln_pa[10];
       wire        ln_s     = |ln_pa[9:0];
-      wire signed [9:0] ln_e3 = r2_lane_exp[gi] + 10'sd1 - $signed({5'b0, ln_lz});
 
       always @(posedge clk) begin
         if (!stall) begin
-          r3_lane_pa[gi]   <= r2_lane_is_int ? ln_prod : ln_pa;
+          r3_lane_pa[gi]   <= r3a_ln_is_int[gi] ? r3a_lane_prod[gi] : ln_pa;
           r3_lane_m[gi]    <= ln_m;
           r3_lane_grs[gi]  <= {ln_g, ln_r, ln_s};
-          r3_lane_exp[gi]  <= ln_e3;
-          r3_lane_f6[gi]   <= r2_lane_f6[gi];
-          r3_lane_pl[gi]   <= r2_lane_pl[gi];
-          r3_lane_prod[gi] <= ln_prod[15:0];
+          r3_lane_exp[gi]  <= r3a_lane_exp[gi];
+          r3_lane_f6[gi]   <= r3a_lane_f6[gi];
+          r3_lane_pl[gi]   <= r3a_lane_pl[gi];
+          r3_lane_prod[gi] <= r3a_lane_prod[gi][15:0];
         end
       end
 
@@ -599,13 +640,47 @@ module fp32_mult (
                    : 6'd48;
 
   wire [47:0] s3_psh    = s3_prod << s3_lz;
-  wire [47:0] s3_align  = s3_psh >> r2_align_sh;
-  wire [47:0] r3_psh_nxt = r2_is_int ? s3_prod : s3_align;
+
+  // ---- 6-stage: S3a registers (merge + LZ + left-shift + params hold) ----
+  always @(posedge clk) begin
+    if (!stall) begin
+      r3a_prod     <= s3_prod;
+      r3a_psh      <= s3_psh;
+      r3a_exp      <= r2_exp_sum + 10'sd1 - $signed({4'b0, s3_lz});
+      r3a_align_sh <= r2_align_sh;
+      r3a_is_int   <= r2_is_int;
+      r3a_any_nan  <= r2_any_nan;
+      r3a_any_inf  <= r2_any_inf;
+      r3a_any_zero <= r2_any_zero;
+      r3a_zero_inf <= r2_zero_inf;
+      r3a_nv       <= r2_nv;
+      r3a_nan_res  <= r2_nan_res;
+      r3a_rs       <= r2_rs;
+      r3a_rm       <= r2_rm;
+      r3a_f        <= r2_f;
+      r3a_ew       <= r2_ew;
+      r3a_n        <= r2_n;
+      r3a_is_signed <= r2_is_signed;
+      r3a_no_inf   <= r2_no_inf;
+      r3a_packed   <= r2_packed;
+      r3a_nlanes   <= r2_nlanes;
+      r3a_lw       <= r2_lw;
+      r3a_lane_f   <= r2_lane_f;
+      r3a_lane_ew  <= r2_lane_ew;
+      r3a_lane_no_inf <= r2_lane_no_inf;
+      r3a_lane_is_int <= r2_lane_is_int;
+      r3a_lane_signed <= r2_lane_signed;
+    end
+  end
+
+  // ---- 6-stage: S3b comb (format align + g/r/s extract) ----
+  wire [47:0] s3_align  = r3a_psh >> r3a_align_sh;
+  wire [47:0] r3_psh_nxt = r3a_is_int ? r3a_prod : s3_align;
   wire [23:0] r3_m_nxt   = r3_psh_nxt[47:24];
   wire        r3_g_nxt   = r3_psh_nxt[23];
   wire        r3_r_nxt   = r3_psh_nxt[22];
   wire        r3_s_nxt   = |r3_psh_nxt[21:0];
-  wire signed [9:0] r3_exp_nxt = r2_exp_sum + 10'sd1 - $signed({4'b0, s3_lz});
+  wire signed [9:0] r3_exp_nxt = r3a_exp;
 
   // ==========================================================================
   // S4 scalar: rounding decisions + subnormal alignment
@@ -770,13 +845,15 @@ module fp32_mult (
     if (!rst_n) begin
       r1_valid <= 1'b0;
       r2_valid <= 1'b0;
+      r3a_valid <= 1'b0;
       r3_valid <= 1'b0;
       r4_valid <= 1'b0;
       r5_valid <= 1'b0;
     end else if (!stall) begin
       r1_valid <= in_valid;
       r2_valid <= r1_valid;
-      r3_valid <= r2_valid;
+      r3a_valid <= r2_valid;
+      r3_valid <= r3a_valid;
       r4_valid <= r3_valid;
       r5_valid <= r4_valid;
     end
@@ -840,34 +917,34 @@ module fp32_mult (
       r2_lane_is_int <= r1_lane_is_int;
       r2_lane_signed <= r1_lane_signed;
 
-      r3_any_nan  <= r2_any_nan;
-      r3_any_inf  <= r2_any_inf;
-      r3_any_zero <= r2_any_zero;
-      r3_zero_inf <= r2_zero_inf;
-      r3_nv       <= r2_nv;
-      r3_nan_res  <= r2_nan_res;
-      r3_rs       <= r2_rs;
+      r3_any_nan <= r3a_any_nan;
+      r3_any_inf <= r3a_any_inf;
+      r3_any_zero <= r3a_any_zero;
+      r3_zero_inf <= r3a_zero_inf;
+      r3_nv <= r3a_nv;
+      r3_nan_res <= r3a_nan_res;
+      r3_rs <= r3a_rs;
       r3_exp      <= r3_exp_nxt;
       r3_m        <= r3_m_nxt;
       r3_g        <= r3_g_nxt;
       r3_r        <= r3_r_nxt;
       r3_s        <= r3_s_nxt;
       r3_psh      <= r3_psh_nxt;
-      r3_rm       <= r2_rm;
-      r3_f        <= r2_f;
-      r3_ew       <= r2_ew;
-      r3_n        <= r2_n;
-      r3_is_int   <= r2_is_int;
-      r3_is_signed <= r2_is_signed;
-      r3_no_inf   <= r2_no_inf;
-      r3_packed   <= r2_packed;
-      r3_nlanes   <= r2_nlanes;
-      r3_lw       <= r2_lw;
-      r3_lane_f   <= r2_lane_f;
-      r3_lane_ew  <= r2_lane_ew;
-      r3_lane_no_inf <= r2_lane_no_inf;
-      r3_lane_is_int <= r2_lane_is_int;
-      r3_lane_signed <= r2_lane_signed;
+      r3_rm <= r3a_rm;
+      r3_f <= r3a_f;
+      r3_ew <= r3a_ew;
+      r3_n <= r3a_n;
+      r3_is_int <= r3a_is_int;
+      r3_is_signed <= r3a_is_signed;
+      r3_no_inf <= r3a_no_inf;
+      r3_packed <= r3a_packed;
+      r3_nlanes <= r3a_nlanes;
+      r3_lw <= r3a_lw;
+      r3_lane_f <= r3a_lane_f;
+      r3_lane_ew <= r3a_lane_ew;
+      r3_lane_no_inf <= r3a_lane_no_inf;
+      r3_lane_is_int <= r3a_lane_is_int;
+      r3_lane_signed <= r3a_lane_signed;
 
       r4_any_nan  <= r3_any_nan;
       r4_any_inf  <= r3_any_inf;

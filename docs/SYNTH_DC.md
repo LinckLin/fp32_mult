@@ -215,6 +215,7 @@ read_ddc 均被禁用(需要 Milkyway 输入),故功耗签核走 pt_shell+PX 路
 
 | 目录 | 内容 |
 |------|------|
+| rtl/fp32_mult.v、fp32_mult_v2.v、fp32_mult_v3.v | 三个版本的 RTL（V1 5 级 / V2 6 级 / V3 7 级，头注释带 VARIANT 标记，模块名均 fp32_mult） |
 | synth/dc/ | 基线综合：makefile、script/dc_sweep.tcl（周期扫描）、inputs/（SDC+filelist+rtl/rtl_v2/rtl_v3 副本）、reports/、outputs/（网表+ddc+sdf） |
 | synth/dc_v2/ | S3 切分 6 级变体综合（含 1.0ns 功耗快照） |
 | synth/dc_v3/ | **V3 时序+功耗优化 7 级变体综合**（含 SAIF 功耗脚本 script/saif_power.tcl） |
