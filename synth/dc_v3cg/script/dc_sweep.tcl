@@ -215,23 +215,32 @@ if {[info exists RETIME] && $RETIME == 1} {
 
 # optional clock gating (power experiment)
 if {[info exists CG] && $CG == 1} {
-    set_clock_gating_style -sequential_cell latch -positive_edge_logic {integrated} -minimum_bitwidth 3
-    set_power_cg_all_registers true
-    puts "INFO: clock gating ENABLED"
+    # SMIC28 CLKLANAQ cells are postcontrol latch+AND ICGs
+    # (clock_gating_integrated_cell : "latch_posedge_postcontrol")
+    set_clock_gating_style -positive_edge_logic {integrated} -control_point after -minimum_bitwidth 3
+    puts "INFO: clock gating ENABLED (integrated postcontrol ICG, -gate_clock compile)"
 }
 
 ###############################################################################
 # initial compile at the SDC period (1.0 ns)
 ###############################################################################
-compile_ultra -no_autoungroup
+if {[info exists CG] && $CG == 1} {
+    compile_ultra -no_autoungroup -gate_clock
+} else {
+    compile_ultra -no_autoungroup
+}
 set wns0 [snap_reports 1.00 "p1000"]
 
-# CG experiment: power-focused run, skip the Fmax sweep
+# 1.0ns-fixed experiment: write netlist, optionally report gating, exit
 if {[info exists CG] && $CG == 1} {
-    report_power -hier -hier_level 2 -analysis_effort medium > $REPORTS_DIR/power_cg.rpt
-    set svf -off
-    exit
+    report_clock_gating -gating_elements > $REPORTS_DIR/clock_gating_$TOP.rpt
 }
+set verilogout_no_tri TRUE
+change_names -rules verilog -hierarchy
+write -f verilog -hierarchy -output $OUTPUT/$TOP.v
+report_power -hier -hier_level 2 -analysis_effort medium > $REPORTS_DIR/power_cg.rpt
+set svf -off
+exit
 
 ###############################################################################
 # clock sweep: tighten period round by round, stop when WNS < -0.5 ns

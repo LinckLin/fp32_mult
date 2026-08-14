@@ -84,7 +84,7 @@ V2 切分后 S3 不再是墙，新墙变成 **S2 乘法器（r1_packed → r2_ti
 |----------|------|
 | P1:2-lane 模式冻结闲置子乘器(FP16x2/BF16x2 时 tile2/3 输入强制 0) | 阵列是功耗大户,4 路只用了 2 路时白烧一半 |
 | P2:INT 模式旁路 LZ+移位锥(s3_prod_lz/ln_prod_lz 强制 0) | INT 结果从不消费 LZ/移位输出 |
-| P3:DC 时钟门控(set_clock_gating_style + power_cg_all_registers) | **库不支持**:basic.db 无集成 ICG 单元(PWR-191),需完整库或分立 latch+AND |
+| P3:DC 时钟门控(set_clock_gating_style {integrated} -control_point after + compile_ultra -gate_clock) | 库里有 ICG(**CLKLANAQV2~16**,postcontrol 型);DC 给 1 组寄存器(r2a_pp/r4_valid)插了 CLKLANAQV2,其余已有 stall-enable 等效门控;CG 网表 242 万门级回放 0 mismatch;PT-PX 实测总功耗 −0.2%(编译噪声级,收益有限,见 §4.5) |
 
 实测结果（SMIC28 RVT, tt/0.8V/25°C）：
 
@@ -195,6 +195,22 @@ SAIF 采集（gate_check/saif_*/，VCS -power + $toggle_report，242 万黄金�
 `set power_enable_analysis true`;PrimePower(pwr_shell)的 read_verilog/
 read_ddc 均被禁用(需要 Milkyway 输入),故功耗签核走 pt_shell+PX 路线。
 
+**时钟门控单元调查(回答"库里到底有没有 ICG")**：
+
+- SMIC28 liberty 里**有**专用集成门控单元:`CLKLANAQV2/V4/V6/V8/V12/V16`
+  (cell_footprint SCC_CLKLANAQ),属性 `clock_gating_integrated_cell :
+  "latch_posedge_postcontrol"`,VCS stdcell 功能模型里也有对应 module;
+- 最初 PWR-191 报"无 ICG 单元"是**命令没配对**:DC 默认 control_point=before
+  (precontrol),库里只有 postcontrol 型——用
+  `set_clock_gating_style -positive_edge_logic {integrated} -control_point after`
+  + `compile_ultra -gate_clock` 即可插入(DC 2018 无 set_power_cg_all_registers);
+- 插入结果:DC 只给 1 组寄存器(r2a_pp[0][0] + r4_valid,共 25 FF)插了
+  CLKLANAQV2;其余 2466 个寄存器自带 stall-enable(EDRNQNV 的 E 端),DC 视为
+  已等效门控、不值得再叠 ICG。CG 网表经 VCS 242 万黄金回放 0 mismatch;
+- 公平功耗 A/B(同为 1.0ns 重新编译、同负载、PT-PX+SAIF):CG 110.4 µW vs
+  无 CG 110.6 µW(仿真时钟 10 MHz)**总功耗 −0.2%**,在编译噪声内——
+  enable 门控已覆盖绝大部分收益;ICG 的真正收益在后端**真实时钟树**阶段。
+
 ## 5. 复现与产物
 
 | 目录 | 内容 |
@@ -202,7 +218,7 @@ read_ddc 均被禁用(需要 Milkyway 输入),故功耗签核走 pt_shell+PX 路
 | synth/dc/ | 基线综合：makefile、script/dc_sweep.tcl（周期扫描）、inputs/（SDC+filelist+rtl/rtl_v2/rtl_v3 副本）、reports/、outputs/（网表+ddc+sdf） |
 | synth/dc_v2/ | S3 切分 6 级变体综合（含 1.0ns 功耗快照） |
 | synth/dc_v3/ | **V3 时序+功耗优化 7 级变体综合**（含 SAIF 功耗脚本 script/saif_power.tcl） |
-| synth/dc_v3cg/ | V3 + DC 时钟门控实验（本库无 ICG 单元，PWR-191） |
+| synth/dc_v3cg/ | V3 + DC 时钟门控实验（CLKLANAQV2 ICG 插入 + PT-PX A/B：−0.2%） |
 | synth/dc_retime/ | 寄存器重定时实验（RETIME=1，无收益） |
 | v2_check/、v3_check/ | 各变体全量功能验证（242 万黄金 + FPU 交叉 + 穷举 + 随机 + 吞吐，全过） |
 | gate_check/ | 门级 VCS 全量回放（iv_tb_full.v）+ SAIF 活动率采集（iv_tb_saif.v、saif_v2/、saif_v3/） |
