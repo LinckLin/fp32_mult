@@ -1,0 +1,6 @@
+# fp32_mult RTL file list (patched copies: register declarations moved to top
+# of module for DC PRESTO, which requires declaration-before-use; content is
+# semantically identical to the repo RTL)
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_mult.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_rnd_inc.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_defs.vh

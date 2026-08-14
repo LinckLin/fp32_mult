@@ -98,8 +98,23 @@ docs/VERIFICATION.md # 验证方法学
 
 SIMD lane 通路未恶化关键路径:用 2.26x 面积换最多 4x 吞吐,频率基本无损。
 
+## ASIC 综合（Design Compiler / SMIC28）
+
+DC O-2018.06 + SMIC28 SCC28NHKCP RVT（tt/0.8V/25°C）实测：
+
+| | 5 级(原版) | 6 级(S3 切分, rtl_v2) |
+|---|---|---|
+| Fmax | **≈1.11 GHz** | **≈1.31 GHz**(+19%) |
+| 面积@1.0ns | 10,078 µm² / 14,756 单元 | 11,116 µm² |
+| 关键级 | S3(合并+LZ+移位) ≈0.90ns | S2 乘法器/S3a/S5 ≈0.76ns |
+
+- 门级网表经 **VCS 全量 2,421,115 条黄金向量回放,0 mismatch**(gate_check/)。
+- 完整报告、Fmax 扫描曲线与优化建议见 [docs/SYNTH_DC.md](docs/SYNTH_DC.md)；
+  复现:`cd synth/dc && make dc`(命令流参照 ~/project/newff 的 DC 流程)。
+
 ## 文档
 
 - [docs/DESIGN.md](docs/DESIGN.md) — 流水线架构、容器约定、全部数学推导、格式特殊值、SIMD 子乘器原理
 - [docs/VERIFICATION.md](docs/VERIFICATION.md) — 三 oracle 方法学、覆盖矩阵、复现步骤、审查历史
+- [docs/SYNTH_DC.md](docs/SYNTH_DC.md) — DC 综合报告:Fmax 上限、关键路径分桶、S3 切分实验、优化建议、门级验证
 

@@ -1,0 +1,4 @@
+# V2 = 6-stage S3-split RTL (fp32_mult.v transformed; helpers unchanged)
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl_v2/fp32_mult.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_rnd_inc.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_defs.vh

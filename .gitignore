@@ -14,3 +14,48 @@ __pycache__/
 .DS_Store
 
 ref_project/
+
+# ---- DC synthesis (synth/) ----
+synth/*/reports/
+synth/*/worklib/
+synth/*/mw/
+synth/*/alib-52/
+synth/*/outputs/*.ddc
+synth/*/outputs/*.sdf
+synth/*/outputs/*.svf
+synth/*/outputs/*.tcl
+synth/*/outputs/*.func.sdc
+synth/*/outputs/*.res
+synth/*/*.log
+synth/*/*.html
+synth/*/*.mr
+synth/*/*.pvl
+synth/*/*.syn
+synth/*/command.log
+synth/*/default.svf
+
+# ---- v2_check (6-stage variant verification) ----
+v2_check/obj_dir/
+v2_check/tb/golden.txt
+v2_check/*.log
+v2_check/*.vcd
+
+# ---- gate_check (gate-level replay) ----
+gate_check/obj_dir/
+gate_check/csrc/
+gate_check/tb/golden.txt
+gate_check/*.log
+gate_check/*.hex
+gate_check/*.vcd
+gate_check/*.key
+gate_check/simv_full*
+gate_check/iv_sim*
+gate_check/rtl/scc28nhkcp_hdc35p140_rvt.v
+gate_check/rtl/fp32_mult_net.v
+
+# DC HTML log snapshots
+synth/*/.DC_log_snapshot*/
+
+# gate_check: tb copies live in the repo root (../tb)
+gate_check/tb/
+synth/*/*.csh

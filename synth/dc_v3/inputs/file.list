@@ -1,0 +1,4 @@
+# V3 = baseline RTL + register retiming experiment (RETIME=1)
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_mult.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_rnd_inc.v
+/home/lzl/project/fpmul/fp32_mult/synth/dc/inputs/rtl/fp32_defs.vh
