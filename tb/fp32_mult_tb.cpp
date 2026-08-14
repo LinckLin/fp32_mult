@@ -253,10 +253,14 @@ static Ref ref_fpu(uint32_t a, uint32_t b, unsigned rm) {
 }
 
 static bool fpu_rounding_probe() {
+  // NOTE: the double source must be non-constant, otherwise GCC folds the
+  // double->float conversion at compile time and the runtime rounding mode
+  // is never exercised (probe would false-fail on Linux/GCC).
+  volatile double dv = 0x1.000001p0;
   std::fesetround(FE_TOWARDZERO);
-  volatile float fz = (float)0x1.000001p0;
+  volatile float fz = (float)dv;
   std::fesetround(FE_UPWARD);
-  volatile float fu = (float)0x1.000001p0;
+  volatile float fu = (float)dv;
   std::fesetround(FE_TONEAREST);
   return f2u(fz) == 0x3F800000u && f2u(fu) == 0x3F800001u;
 }

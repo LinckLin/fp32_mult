@@ -49,6 +49,77 @@ module fp32_mult (
   assign in_ready = ~stall;
 
   // ==========================================================================
+  // Pipeline registers
+  // ==========================================================================
+  reg        r1_valid, r2_valid, r3_valid, r4_valid, r5_valid;
+  reg        r1_any_nan, r1_any_inf, r1_any_zero, r1_zero_inf, r1_nv;
+  reg [31:0] r1_nan_res;
+  reg        r1_rs;
+  reg [23:0] r1_sig_a, r1_sig_b;
+  reg signed [9:0] r1_exp_sum;
+  reg [2:0]  r1_rm;
+  reg [4:0]  r1_f, r1_n, r1_lw;
+  reg [3:0]  r1_ew;
+  reg [5:0]  r1_align_sh;
+  reg        r1_is_int, r1_is_signed, r1_no_inf, r1_packed;
+  reg [2:0]  r1_nlanes;
+  reg [4:0]  r1_lane_f;
+  reg [3:0]  r1_lane_ew;
+  reg        r1_lane_no_inf, r1_lane_is_int, r1_lane_signed;
+  reg        r2_any_nan, r2_any_inf, r2_any_zero, r2_zero_inf, r2_nv;
+  reg [31:0] r2_nan_res;
+  reg        r2_rs;
+  reg signed [9:0] r2_exp_sum;
+  reg [2:0]  r2_rm;
+  reg [3:0]  r2_ew;
+  reg [4:0]  r2_f, r2_n, r2_lw;
+  reg [5:0]  r2_align_sh;
+  reg        r2_is_int, r2_is_signed, r2_no_inf, r2_packed;
+  reg [2:0]  r2_nlanes;
+  reg [4:0]  r2_lane_f;
+  reg [3:0]  r2_lane_ew;
+  reg        r2_lane_no_inf, r2_lane_is_int, r2_lane_signed;
+  reg        r3_any_nan, r3_any_inf, r3_any_zero, r3_zero_inf, r3_nv;
+  reg [31:0] r3_nan_res;
+  reg        r3_rs;
+  reg signed [9:0] r3_exp;
+  reg [23:0] r3_m;
+  reg        r3_g, r3_r, r3_s;
+  reg [47:0] r3_psh;
+  reg [2:0]  r3_rm;
+  reg [3:0]  r3_ew;
+  reg [4:0]  r3_f, r3_n, r3_lw;
+  reg        r3_is_int, r3_is_signed, r3_no_inf, r3_packed;
+  reg [2:0]  r3_nlanes;
+  reg [4:0]  r3_lane_f;
+  reg [3:0]  r3_lane_ew;
+  reg        r3_lane_no_inf, r3_lane_is_int, r3_lane_signed;
+  reg        r4_any_nan, r4_any_inf, r4_any_zero, r4_zero_inf, r4_nv;
+  reg [31:0] r4_nan_res;
+  reg        r4_rs;
+  reg signed [9:0] r4_exp;
+  reg [23:0] r4_m;
+  reg        r4_g, r4_r, r4_s;
+  /* verilator lint_off UNUSEDSIGNAL */  // r4_psh[47:32] unused by INT results
+  reg [47:0] r4_psh;
+  /* verilator lint_on UNUSEDSIGNAL */
+  reg [22:0] r4_fpre;
+  reg        r4_sg, r4_sr, r4_ss;
+  reg        r4_inc_n, r4_inc_s;
+  reg [2:0]  r4_rm;
+  reg [3:0]  r4_ew;
+  reg [4:0]  r4_f, r4_n, r4_lw;
+  reg        r4_is_int, r4_is_signed, r4_no_inf, r4_packed;
+  reg [2:0]  r4_nlanes;
+  reg [4:0]  r4_lane_f;
+  reg [3:0]  r4_lane_ew;
+  reg        r4_lane_no_inf, r4_lane_is_int, r4_lane_signed;
+  reg [63:0] r5_result;
+  reg [15:0] r5_fflags;
+
+
+
+  // ==========================================================================
   // Mode decode (scalar + packed parameter LUTs)
   // ==========================================================================
   reg [4:0]  s1_f;
@@ -693,75 +764,6 @@ module fp32_mult (
       r5_fflags_nxt = {11'b0, s5_fflags};
     end
   end
-
-  // ==========================================================================
-  // Pipeline registers
-  // ==========================================================================
-  reg        r1_valid, r2_valid, r3_valid, r4_valid, r5_valid;
-  reg        r1_any_nan, r1_any_inf, r1_any_zero, r1_zero_inf, r1_nv;
-  reg [31:0] r1_nan_res;
-  reg        r1_rs;
-  reg [23:0] r1_sig_a, r1_sig_b;
-  reg signed [9:0] r1_exp_sum;
-  reg [2:0]  r1_rm;
-  reg [4:0]  r1_f, r1_n, r1_lw;
-  reg [3:0]  r1_ew;
-  reg [5:0]  r1_align_sh;
-  reg        r1_is_int, r1_is_signed, r1_no_inf, r1_packed;
-  reg [2:0]  r1_nlanes;
-  reg [4:0]  r1_lane_f;
-  reg [3:0]  r1_lane_ew;
-  reg        r1_lane_no_inf, r1_lane_is_int, r1_lane_signed;
-  reg        r2_any_nan, r2_any_inf, r2_any_zero, r2_zero_inf, r2_nv;
-  reg [31:0] r2_nan_res;
-  reg        r2_rs;
-  reg signed [9:0] r2_exp_sum;
-  reg [2:0]  r2_rm;
-  reg [3:0]  r2_ew;
-  reg [4:0]  r2_f, r2_n, r2_lw;
-  reg [5:0]  r2_align_sh;
-  reg        r2_is_int, r2_is_signed, r2_no_inf, r2_packed;
-  reg [2:0]  r2_nlanes;
-  reg [4:0]  r2_lane_f;
-  reg [3:0]  r2_lane_ew;
-  reg        r2_lane_no_inf, r2_lane_is_int, r2_lane_signed;
-  reg        r3_any_nan, r3_any_inf, r3_any_zero, r3_zero_inf, r3_nv;
-  reg [31:0] r3_nan_res;
-  reg        r3_rs;
-  reg signed [9:0] r3_exp;
-  reg [23:0] r3_m;
-  reg        r3_g, r3_r, r3_s;
-  reg [47:0] r3_psh;
-  reg [2:0]  r3_rm;
-  reg [3:0]  r3_ew;
-  reg [4:0]  r3_f, r3_n, r3_lw;
-  reg        r3_is_int, r3_is_signed, r3_no_inf, r3_packed;
-  reg [2:0]  r3_nlanes;
-  reg [4:0]  r3_lane_f;
-  reg [3:0]  r3_lane_ew;
-  reg        r3_lane_no_inf, r3_lane_is_int, r3_lane_signed;
-  reg        r4_any_nan, r4_any_inf, r4_any_zero, r4_zero_inf, r4_nv;
-  reg [31:0] r4_nan_res;
-  reg        r4_rs;
-  reg signed [9:0] r4_exp;
-  reg [23:0] r4_m;
-  reg        r4_g, r4_r, r4_s;
-  /* verilator lint_off UNUSEDSIGNAL */  // r4_psh[47:32] unused by INT results
-  reg [47:0] r4_psh;
-  /* verilator lint_on UNUSEDSIGNAL */
-  reg [22:0] r4_fpre;
-  reg        r4_sg, r4_sr, r4_ss;
-  reg        r4_inc_n, r4_inc_s;
-  reg [2:0]  r4_rm;
-  reg [3:0]  r4_ew;
-  reg [4:0]  r4_f, r4_n, r4_lw;
-  reg        r4_is_int, r4_is_signed, r4_no_inf, r4_packed;
-  reg [2:0]  r4_nlanes;
-  reg [4:0]  r4_lane_f;
-  reg [3:0]  r4_lane_ew;
-  reg        r4_lane_no_inf, r4_lane_is_int, r4_lane_signed;
-  reg [63:0] r5_result;
-  reg [15:0] r5_fflags;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
