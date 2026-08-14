@@ -93,16 +93,18 @@ V2 切分后 S3 不再是墙，新墙变成 **S2 乘法器（r1_packed → r2_ti
 | Fmax | ≈1.11 GHz | ≈1.31 GHz | **≈1.36 GHz(+23% vs 基线)** |
 | 面积@1.0ns | 10,078 µm² | 11,116 µm² | 12,377 µm² |
 | FF | 1,597 | 2,084 | 2,466 |
-| 功耗@1.0ns(默认翻转) | n/a | 8.43 mW | 9.45 mW(+12% vs V2) |
-| 功耗@Fmax 折合每运算能量 | n/a | 6.4 pJ | **≈6.9 pJ** |
+| **功耗@1GHz(PrimeTime PX+SAIF)** | **8.80 mW** | **11.18 mW** | **12.24 mW(+9% vs V2)** |
+| 每运算能量@各自 Fmax | **7.96 pJ** | 8.51 pJ | 8.99 pJ |
 
-\* 基线功耗按 V2 重跑同条件测得(初始基线脚本未在 1.0ns 出功耗报告)。
+**功耗的诚实结论（PrimeTime PX 实测，见 §4.5）**：
 
-**功耗的诚实结论**：7 级流水新增的寄存器与逻辑翻转(+382 FF、+652 单元)超过
-P1/P2 门控省下的部分,同频总功耗 +8~12%(默认活动率与 VCS SAIF 反标——242 万
-黄金回放与 SIMD 密集负载两种活动率——结论一致);但按各自 Fmax 折算的**每运算
-能量 V3 优于基线**(9.45 mW/1.36 GHz vs 8.43 mW/1.11 GHz)。P3 门控在本库视图
-无法评估。
+- P1/P2 门控**确实有效**：SIMD 密集负载(FP16x2/BF16x2/INT8x4)下 V3 的
+  **开关功耗比 V2 低 15%**(5.11 vs 6.02 µW@10MHz 仿真时钟,PT-PX 实测);
+- 但深流水线代价更大:+382 FF、+652 单元使 V3 内部功耗上升,总功耗
+  V3 ≈ V2×1.09(混合负载)/×1.09(SIMD 负载);
+- 折合每运算能量:基线 7.96 pJ 最省,V3 为 8.99 pJ——**频率收益(±23%)是用
+  ~13% 的能耗换来的**;
+- P3 时钟门控在本库视图无法评估(basic.db 无集成 ICG 单元,PWR-191)。
 
 **V3 剩下的墙**(0.25ns 约束、300 条端点分桶):
 - S5 合并级(rnd_inc→增量加法→打包 mux,0.73ns)
@@ -163,6 +165,35 @@ GATE-LEVEL GOLDEN REPLAY PASSED   (CPU 147.85 s)
 - iverilog 语义正确但 vvp 对 1.5 万单元网表太慢（10 万条要几十分钟），
   只用于 2000 条快速自检；
 - VCS 二进制需经 `snps-centos7` 兼容层运行（宿主 glibc 不兼容）。
+
+## 4.5 功耗分析（PrimeTime PX + VCS SAIF 活动率反标）
+
+功耗签核用 **PrimeTime PX**（pt_shell）而非 DC 的 report_power：读入 DC 门级
+网表 + SMIC28 liberty，用 **VCS 门级仿真的 SAIF 切换活动率**反标（100% 网络
+覆盖），按 1.0ns 时钟报告平均功耗。复现（每个 synth/dc*/ 目录）：
+
+```sh
+export SYNOPSYS_LC_ROOT=/home/public/app/synopsys/lc/O-2018.06-SP1   # 否则 PT-063
+SAIF_FILE=../../gate_check/saif_v3/dut_toggle.saif \
+  pt_shell -no_init -f script/pt_power.tcl
+```
+
+SAIF 采集（gate_check/saif_*/，VCS -power + $toggle_report，242 万黄金回放 /
+100 万 SIMD 密集负载两种 workload）。
+
+| 负载 | 基线 | V2 | V3 |
+|------|------|----|----|
+| 混合(全部 23 格式)总功耗@1GHz | 8.80 mW | 11.18 mW | 12.24 mW |
+| 混合:开关/内部/漏电 | 0.47/5.12/3.21 | 0.52/6.50/4.16 | 0.44/7.53/4.27 (mW) |
+| SIMD 密集总功耗@1GHz | — | 11.34 mW | 12.40 mW |
+| SIMD 密集:开关 | — | 6.02 µW | **5.11 µW(−15%)** |
+
+注:门级 tb 仿真时钟为 10 MHz(#5000@10ps),SAIF 功耗与频率线性,表中已按
+×100 折算到 1GHz;泄漏功耗不随频率变化(基线 32.1 µW 最小,V3 42.7 µW)。
+
+经验记录:本机 pt_shell 不带 PX 时 PWR-001"Power analysis is disabled",需
+`set power_enable_analysis true`;PrimePower(pwr_shell)的 read_verilog/
+read_ddc 均被禁用(需要 Milkyway 输入),故功耗签核走 pt_shell+PX 路线。
 
 ## 5. 复现与产物
 

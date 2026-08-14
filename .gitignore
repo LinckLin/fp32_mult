@@ -68,7 +68,6 @@ v3_check/*.vcd
 
 # ---- gate_check SAIF flow (generated data + netlist copies) ----
 gate_check/*.saif
-gate_check/saif_v2/
-gate_check/saif_v3/
+gate_check/saif_*/
 gate_check/stim_simd.hex
 gate_check/exp_simd.hex
