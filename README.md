@@ -2,7 +2,7 @@
 
 5 级流水线**多格式 + SIMD 浮点/整数乘法器**:23 种操作模式(14 标量 + 9 打包)、完整 IEEE 754 舍入与异常语义、单一数据通路全复用,含 Verilator 全自动验证与三套独立参考模型互证。
 
-> RTL 严格遵循项目《RTL 编码风格指南》(`rtl_style_guide.md`):纯可综合 Verilog-2001,无 `logic`/`always_ff`/`function`/`task`/`always` 内 procedural `for`;控制 FF 异步低复位、数据 FF 不复位。
+> RTL 风格:纯可综合 Verilog-2001,无 `logic`/`always_ff`/`function`/`task`/`always` 内 procedural `for`;控制 FF 异步低复位、数据 FF 不复位。
 
 ## 特性
 
@@ -60,9 +60,15 @@ tb/
   indep_model.py     # 第三 oracle:Fraction 网格就近舍入模型(独立算法)
   golden.txt         # 黄金向量(自动生成,不入库)
   audit_vectors.py   # FP32 定向向量表审计工具
-rtl_style_guide.md   # 编码风格指南
 docs/DESIGN.md       # 架构与数学推导
 docs/VERIFICATION.md # 验证方法学
+docs/SYNTH_DC.md     # DC 综合报告(Fmax 上限、S3 切分实验、门级验证)
+synth/
+  dc/                # 基线 DC 综合(SMIC28):makefile + 扫描脚本 + SDC + 网表
+  dc_v2/             # S3 切分 6 级变体综合(rtl_v2,Fmax +19%)
+  dc_v3/             # 寄存器重定时实验(无收益,证明 5 级已平衡)
+v2_check/            # 6 级变体全量功能验证(全部 tb 阶段)
+gate_check/          # 门级网表 VCS 全量黄金回放(242 万条 0 mismatch)
 ```
 
 ## 接口

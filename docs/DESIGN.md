@@ -12,7 +12,7 @@
 | S4 | ROUND | 普通/次正规两路径舍入增量(`fp32_rnd_inc` 例化) + 次正规字段对齐 |
 | S5 | PACK | 阶码修正、上溢(按模式/格式)、特殊值裁决、按格式打包;SIMD 结果/标志拼装 |
 
-复位:valid 链(控制 FF)异步低复位;数据 FF 不复位(操作数缓冲类,符合风格指南)。反压:out_ready 拉低时全流水线冻结(无旁路),in_ready = ~stall。
+复位:valid 链(控制 FF)异步低复位;数据 FF 不复位(操作数缓冲类,项目风格约定)。反压:out_ready 拉低时全流水线冻结(无旁路),in_ready = ~stall。
 
 ## 2. 容器约定与指数公式(核心推导)
 
@@ -108,7 +108,7 @@ NaN 惯例:payload 取 a(a 为 NaN 时)否则 b;静默位强制置 1;NaN 符号 
 
 - 纯 Verilog-2001(`.v`):无 logic/always_ff/always_comb/function/task;
 - 48/24 位前导零计数为固定 mux 树(6x8 / 3x8 三元链),无 procedural for;
-- SIMD 经 `generate` 结构性复制 4 份(风格指南认可的复制手段);
+- SIMD 经 `generate` 结构性复制 4 份(项目风格约定的复制手段);
 - 控制 FF 复位、数据 FF 不复位;组合块默认值防 latch;`make lint` 零警告。
 
 ## 7. 性能与面积(yosys 0.68 + nextpnr + icetime,iCE40 HX8K)
